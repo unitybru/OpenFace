@@ -124,7 +124,7 @@ cv::Mat bytesToMat(byte* bytes, int width, int height)
 }
 
 extern "C" {
-	PINVOKE_ENTRY_POINT bool __stdcall OpenFaceSetup()
+	PINVOKE_ENTRY_POINT bool __stdcall OpenFaceSetup(const char* executablePath)
 	{
 		if (!s_openFaceParams.isClosed())
 		{
@@ -134,7 +134,8 @@ extern "C" {
 
 		// Empty arguments for now
 		std::vector<std::string> arguments;
-		arguments.push_back("C:\\DEV\\HACKWEEK\\OpenFaceUnity\\x64\\Debug\\FaceLandmarkImg.exe"); // TODO: fix this dirty hack
+		std::string exePath(executablePath);
+		arguments.push_back(exePath);
 
 		// Load the models if images found
 		s_openFaceParams.faceModelParams = new LandmarkDetector::FaceModelParameters(arguments);

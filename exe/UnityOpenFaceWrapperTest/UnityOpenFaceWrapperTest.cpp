@@ -5,7 +5,7 @@
 #include <iostream>
 
 // TODO: put this in the same file as the declarations in the DLL to avoid mismatches
-extern "C" __declspec(dllimport) bool OpenFaceSetup();
+extern "C" __declspec(dllimport) bool OpenFaceSetup(const char* executablePath);
 extern "C" __declspec(dllimport) std::string OpenFaceGetFeatures(const char* pixels, int width, int height);
 extern "C" __declspec(dllimport) bool OpenFaceClose();
 
@@ -13,8 +13,10 @@ int main()
 {
     std::cout << "Hello World!\n";
 
+    std::string sPath = "C:\\DEV\\HACKWEEK\\OpenFaceUnity\\x64\\Debug\\FaceLandmarkImg.exe";
+
     // Initialize OpenFace wrapper
-    OpenFaceSetup();
+    OpenFaceSetup(sPath.c_str());
 
     char test[640*480*3]; // 3 bytes per pixel
     for (int i = 0; i < 640*480*3; i++)
@@ -25,7 +27,7 @@ int main()
     OpenFaceClose();
 
     // Test
-    OpenFaceSetup();
+    OpenFaceSetup(sPath.c_str());
     OpenFaceClose();
 }
 
