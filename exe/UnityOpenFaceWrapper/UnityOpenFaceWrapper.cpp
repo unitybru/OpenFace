@@ -47,150 +47,223 @@
 #include <RecorderOpenFace.h>
 #include <RecorderOpenFaceParameters.h>
 
+// For JSON
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
+
 
 #ifndef CONFIG_DIR
 #define CONFIG_DIR "~"
 #endif
 
-std::vector<std::string> get_arguments(int argc, char **argv)
+#define PINVOKE_ENTRY_POINT __declspec(dllexport)
+
+struct CameraCalibrationParams
 {
+	float fx = -1.0; // focal length X
+	float fy = -1.0; // focal length Y
+	float cx = -1.0; // camera principal point X
+	float cy = -1.0; // camera principal point Y
+};
 
-	std::vector<std::string> arguments;
+class OpenFaceParams
+{
+public:
+	LandmarkDetector::FaceModelParameters* faceModelParams = nullptr;
+	FaceAnalysis::FaceAnalyserParameters* faceAnalyserParams = nullptr;
+	FaceAnalysis::FaceAnalyser* faceAnalyser = nullptr;
+	LandmarkDetector::CLNF* faceModel = nullptr;
+	CameraCalibrationParams cameraCalib;
 
-	for (int i = 0; i < argc; ++i)
-	{
-		arguments.push_back(std::string(argv[i]));
+	cv::CascadeClassifier* classifier;
+	dlib::frontal_face_detector face_detector_hog;
+	LandmarkDetector::FaceDetectorMTCNN* face_detector_mtcnn;
+
+	bool isClosed() {
+		return faceModelParams == nullptr &&
+			faceAnalyserParams == nullptr &&
+			faceAnalyser == nullptr &&
+			faceModel == nullptr &&
+			classifier == nullptr &&
+			face_detector_mtcnn == nullptr;
 	}
-	return arguments;
+
+	bool Close()
+	{
+		free(faceAnalyser);
+		free(faceAnalyserParams);
+		free(faceModel);
+		free(faceModelParams);
+		free(classifier);
+		free(face_detector_mtcnn);
+		faceAnalyser = nullptr;
+		faceAnalyserParams = nullptr;
+		faceModel = nullptr;
+		faceModelParams = nullptr;
+		classifier = nullptr;
+		face_detector_mtcnn = nullptr;
+
+		return true;
+	}
+};
+
+static OpenFaceParams s_openFaceParams;
+
+byte* matToBytes(cv::Mat image)
+{
+	int size = image.total() * image.elemSize();
+	byte* bytes = new byte[size];  // you will have to delete[] that later
+	std::memcpy(bytes, image.data, size * sizeof(byte));
+	return bytes;
 }
 
-int main(int argc, char **argv)
+cv::Mat bytesToMat(byte* bytes, int width, int height)
 {
+	cv::Mat image = cv::Mat(height, width, CV_8UC4, bytes).clone(); // make a copy
+	return image;
+}
 
-	//Convert arguments to more convenient vector form
-	std::vector<std::string> arguments = get_arguments(argc, argv);
-
-	// no arguments: output usage
-	if (arguments.size() == 1)
+extern "C" {
+	PINVOKE_ENTRY_POINT bool __stdcall OpenFaceSetup()
 	{
-		std::cout << "For command line arguments see:" << std::endl;
-		std::cout << " https://github.com/TadasBaltrusaitis/OpenFace/wiki/Command-line-arguments";
-		return 0;
+		if (!s_openFaceParams.isClosed())
+		{
+			std::cout << "ERROR: You must close the OpenFace wrapper before setting up a new one." << std::endl;
+			return false;
+		}
+
+		// Empty arguments for now
+		std::vector<std::string> arguments;
+		arguments.push_back("C:\\DEV\\HACKWEEK\\OpenFaceUnity\\x64\\Debug\\FaceLandmarkImg.exe"); // TODO: fix this dirty hack
+
+		// Load the models if images found
+		s_openFaceParams.faceModelParams = new LandmarkDetector::FaceModelParameters(arguments);
+		auto det_parameters = *s_openFaceParams.faceModelParams;
+
+		// The modules that are being used for tracking
+		std::cout << "Loading the model" << std::endl;
+		s_openFaceParams.faceModel = new LandmarkDetector::CLNF(det_parameters.model_location);
+		auto face_model = *s_openFaceParams.faceModel;
+
+		if (!face_model.loaded_successfully)
+		{
+			std::cout << "ERROR: Could not load the landmark detector" << std::endl;
+			return false;
+		}
+
+		std::cout << "Model loaded" << std::endl;
+
+		// Load facial feature extractor and AU analyser (make sure it is static)
+		s_openFaceParams.faceAnalyserParams = new FaceAnalysis::FaceAnalyserParameters(arguments);
+		auto face_analysis_params = *s_openFaceParams.faceAnalyserParams;
+
+		face_analysis_params.OptimizeForImages();
+		s_openFaceParams.faceAnalyser = new FaceAnalysis::FaceAnalyser(face_analysis_params);
+
+		// If bounding boxes not provided, use a face detector
+		s_openFaceParams.classifier = new cv::CascadeClassifier(det_parameters.haar_face_detector_location);
+		s_openFaceParams.face_detector_hog = dlib::get_frontal_face_detector();
+		s_openFaceParams.face_detector_mtcnn = new LandmarkDetector::FaceDetectorMTCNN(det_parameters.mtcnn_face_detector_location);
+
+		// If can't find MTCNN face detector, default to HOG one
+		if (det_parameters.curr_face_detector == LandmarkDetector::FaceModelParameters::MTCNN_DETECTOR && s_openFaceParams.face_detector_mtcnn->empty())
+		{
+			std::cout << "INFO: defaulting to HOG-SVM face detector" << std::endl;
+			det_parameters.curr_face_detector = LandmarkDetector::FaceModelParameters::HOG_SVM_DETECTOR;
+		}
+
+		// Ready to analyze
+		return true;
 	}
 
-	// Prepare for image reading
-	Utilities::ImageCapture image_reader;
-
-	// The sequence reader chooses what to open based on command line arguments provided
-	if (!image_reader.Open(arguments))
+	// Return JSON string?
+	// The pixels are in ARGB32 format
+	PINVOKE_ENTRY_POINT bool __stdcall OpenFaceGetFeatures(const char* pixels, int width, int height, char* jsonData, int jsonDataLength)
 	{
-		std::cout << "Could not open any images" << std::endl;
-		return 1;
-	}
-
-	// Load the models if images found
-	LandmarkDetector::FaceModelParameters det_parameters(arguments);
-
-	// The modules that are being used for tracking
-	std::cout << "Loading the model" << std::endl;
-	LandmarkDetector::CLNF face_model(det_parameters.model_location);
-
-	if (!face_model.loaded_successfully)
-	{
-		std::cout << "ERROR: Could not load the landmark detector" << std::endl;
-		return 1;
-	}
-
-	std::cout << "Model loaded" << std::endl;
-
-	// Load facial feature extractor and AU analyser (make sure it is static)
-	FaceAnalysis::FaceAnalyserParameters face_analysis_params(arguments);
-	face_analysis_params.OptimizeForImages();
-	FaceAnalysis::FaceAnalyser face_analyser(face_analysis_params);
-
-	// If bounding boxes not provided, use a face detector
-	cv::CascadeClassifier classifier(det_parameters.haar_face_detector_location);
-	dlib::frontal_face_detector face_detector_hog = dlib::get_frontal_face_detector();
-	LandmarkDetector::FaceDetectorMTCNN face_detector_mtcnn(det_parameters.mtcnn_face_detector_location);
-
-	// If can't find MTCNN face detector, default to HOG one
-	if (det_parameters.curr_face_detector == LandmarkDetector::FaceModelParameters::MTCNN_DETECTOR && face_detector_mtcnn.empty())
-	{
-		std::cout << "INFO: defaulting to HOG-SVM face detector" << std::endl;
-		det_parameters.curr_face_detector = LandmarkDetector::FaceModelParameters::HOG_SVM_DETECTOR;
-	}
-
-	// A utility for visualizing the results
-	Utilities::Visualizer visualizer(arguments);
-
-	cv::Mat rgb_image;
-
-	rgb_image = image_reader.GetNextImage();
+		if (s_openFaceParams.isClosed())
+		{
+			std::cout << "ERROR: Setup() was not called properly" << std::endl;
+			return false;
+		}
 	
-	if (!face_model.eye_model)
-	{
-		std::cout << "WARNING: no eye model found" << std::endl;
-	}
+		cv::Mat rgba_image = bytesToMat((byte*)pixels, width, height);
+		cv::Mat rgb_image = cv::Mat();
+		// Convert to RGB24. Strangely enough we expect RGBA input but we get BGRA
+		cv::cvtColor(rgba_image, rgb_image, cv::COLOR_BGRA2RGB);
+		// Flip vertically?
+		cv::flip(rgb_image, rgb_image, 0);
 
-	if (face_analyser.GetAUClassNames().size() == 0 && face_analyser.GetAUClassNames().size() == 0)
-	{
-		std::cout << "WARNING: no Action Unit models found" << std::endl;
-	}
+		// Save the image to file for tests
+#ifdef false
+		auto path = "C:/DEV/HACKWEEK/test.jpg";
+		bool okWrite = cv::imwrite(path, rgb_image); // A JPG FILE IS BEING SAVED
+#endif
 
-	std::cout << "Starting tracking" << std::endl;
-	while (!rgb_image.empty())
-	{
-	
-		Utilities::RecorderOpenFaceParameters recording_params(arguments, false, false,
-			image_reader.fx, image_reader.fy, image_reader.cx, image_reader.cy);
+		auto face_model = *s_openFaceParams.faceModel;
+		auto face_analyser = *s_openFaceParams.faceAnalyser;
+		auto det_parameters = *s_openFaceParams.faceModelParams;
 
 		if (!face_model.eye_model)
 		{
-			recording_params.setOutputGaze(false);
+			std::cout << "WARNING: no eye model found" << std::endl;
 		}
-		Utilities::RecorderOpenFace open_face_rec(image_reader.name, recording_params, arguments);
 
-		visualizer.SetImage(rgb_image, image_reader.fx, image_reader.fy, image_reader.cx, image_reader.cy);
+		if (face_analyser.GetAUClassNames().size() == 0 && face_analyser.GetAUClassNames().size() == 0)
+		{
+			std::cout << "WARNING: no Action Unit models found" << std::endl;
+		}
+
+		std::cout << "Starting tracking" << std::endl;
+		bool has_bounding_boxes = false;
+		float fx = s_openFaceParams.cameraCalib.fx;
+		float fy = s_openFaceParams.cameraCalib.fy;
+		float cx = s_openFaceParams.cameraCalib.cx;
+		float cy = s_openFaceParams.cameraCalib.cy;
 
 		// Making sure the image is in uchar grayscale (some face detectors use RGB, landmark detector uses grayscale)
-		cv::Mat_<uchar> grayscale_image = image_reader.GetGrayFrame();
+		cv::Mat_<uchar> grayscale_image; // TODO: convert color to grayscale
+		cv::cvtColor(rgb_image, grayscale_image, cv::COLOR_RGB2GRAY);
 
 		// Detect faces in an image
 		std::vector<cv::Rect_<float> > face_detections;
 
-		if (image_reader.has_bounding_boxes)
+		if (has_bounding_boxes)
 		{
-			face_detections = image_reader.GetBoundingBoxes();
+			//face_detections = image_reader.GetBoundingBoxes();
+			std::cout << "Unexpected setup (bounding boxes)" << std::endl;
+			return false;
 		}
 		else
 		{
 			if (det_parameters.curr_face_detector == LandmarkDetector::FaceModelParameters::HOG_SVM_DETECTOR)
 			{
 				std::vector<float> confidences;
-				LandmarkDetector::DetectFacesHOG(face_detections, grayscale_image, face_detector_hog, confidences);
+				LandmarkDetector::DetectFacesHOG(face_detections, grayscale_image, s_openFaceParams.face_detector_hog, confidences);
 			}
 			else if (det_parameters.curr_face_detector == LandmarkDetector::FaceModelParameters::HAAR_DETECTOR)
 			{
-				LandmarkDetector::DetectFaces(face_detections, grayscale_image, classifier);
+				LandmarkDetector::DetectFaces(face_detections, grayscale_image, *s_openFaceParams.classifier);
 			}
 			else
 			{
 				std::vector<float> confidences;
-				LandmarkDetector::DetectFacesMTCNN(face_detections, rgb_image, face_detector_mtcnn, confidences);
+				LandmarkDetector::DetectFacesMTCNN(face_detections, rgb_image, *s_openFaceParams.face_detector_mtcnn, confidences);
 			}
 		}
 
 		// Detect landmarks around detected faces
 		int face_det = 0;
 		// perform landmark detection for every face detected
+		json j;
+		j["name"] = "openface";
+		j["faces"] = {};
 		for (size_t face = 0; face < face_detections.size(); ++face)
 		{
-
 			// if there are multiple detections go through them
 			bool success = LandmarkDetector::DetectLandmarksInImage(rgb_image, face_detections[face], face_model, det_parameters, grayscale_image);
 
 			// Estimate head pose and eye gaze				
-			cv::Vec6d pose_estimate = LandmarkDetector::GetPose(face_model, image_reader.fx, image_reader.fy, image_reader.cx, image_reader.cy);
+			cv::Vec6d pose_estimate = LandmarkDetector::GetPose(face_model, fx, fy, cx, cy);
 
 			// Gaze tracking, absolute gaze direction
 			cv::Point3f gaze_direction0(0, 0, -1);
@@ -199,57 +272,51 @@ int main(int argc, char **argv)
 
 			if (face_model.eye_model)
 			{
-				GazeAnalysis::EstimateGaze(face_model, gaze_direction0, image_reader.fx, image_reader.fy, image_reader.cx, image_reader.cy, true);
-				GazeAnalysis::EstimateGaze(face_model, gaze_direction1, image_reader.fx, image_reader.fy, image_reader.cx, image_reader.cy, false);
+				GazeAnalysis::EstimateGaze(face_model, gaze_direction0, fx, fy, cx, cy, true);
+				GazeAnalysis::EstimateGaze(face_model, gaze_direction1, fx, fy, cx, cy, false);
 				gaze_angle = GazeAnalysis::GetGazeAngle(gaze_direction0, gaze_direction1);
 			}
 
-			cv::Mat sim_warped_img;
-			cv::Mat_<double> hog_descriptor; int num_hog_rows = 0, num_hog_cols = 0;
+			json jsonFace;
+			jsonFace["id"] = face;
+			jsonFace["pose"]["x"] = pose_estimate[0];
+			jsonFace["pose"]["y"] = pose_estimate[1];
+			jsonFace["pose"]["z"] = pose_estimate[2];
+			jsonFace["pose"]["rotX"] = pose_estimate[3];
+			jsonFace["pose"]["rotY"] = pose_estimate[4];
+			jsonFace["pose"]["rotZ"] = pose_estimate[5];
+			jsonFace["gaze0"]["x"] = gaze_direction0.x;
+			jsonFace["gaze0"]["y"] = gaze_direction0.y;
+			jsonFace["gaze0"]["z"] = gaze_direction0.z;
+			jsonFace["gaze1"]["x"] = gaze_direction1.x;
+			jsonFace["gaze1"]["y"] = gaze_direction1.y;
+			jsonFace["gaze1"]["z"] = gaze_direction1.z;
 
-			// Perform AU detection and HOG feature extraction, as this can be expensive only compute it if needed by output or visualization
-			if (recording_params.outputAlignedFaces() || recording_params.outputHOG() || recording_params.outputAUs() || visualizer.vis_align || visualizer.vis_hog)
+			jsonFace["landmarks"]["success"] = success;
+			jsonFace["landmarks"]["landmarks2d"] = {};
+			if (success)
 			{
-				face_analyser.PredictStaticAUsAndComputeFeatures(rgb_image, face_model.detected_landmarks);
-				face_analyser.GetLatestAlignedFace(sim_warped_img);
-				face_analyser.GetLatestHOG(hog_descriptor, num_hog_rows, num_hog_cols);
+				auto numLandmarks = face_model.detected_landmarks.size().height / 2;
+				for (int i = 0; i < numLandmarks; i++)
+				{
+					json jsonCurrLandmark;
+					jsonCurrLandmark["x"] = *face_model.detected_landmarks[i];
+					jsonCurrLandmark["y"] = *face_model.detected_landmarks[i + numLandmarks];
+					jsonFace["landmarks"]["landmarks2d"].push_back(jsonCurrLandmark);
+				}
 			}
 
-			// Displaying the tracking visualizations
-			visualizer.SetObservationFaceAlign(sim_warped_img);
-			visualizer.SetObservationHOG(hog_descriptor, num_hog_rows, num_hog_cols);
-			visualizer.SetObservationLandmarks(face_model.detected_landmarks, 1.0, face_model.GetVisibilities()); // Set confidence to high to make sure we always visualize
-			visualizer.SetObservationPose(pose_estimate, 1.0);
-			visualizer.SetObservationGaze(gaze_direction0, gaze_direction1, LandmarkDetector::CalculateAllEyeLandmarks(face_model), LandmarkDetector::Calculate3DEyeLandmarks(face_model, image_reader.fx, image_reader.fy, image_reader.cx, image_reader.cy), face_model.detection_certainty);
-			visualizer.SetObservationActionUnits(face_analyser.GetCurrentAUsReg(), face_analyser.GetCurrentAUsClass());
-
-			// Setting up the recorder output
-			open_face_rec.SetObservationHOG(face_model.detection_success, hog_descriptor, num_hog_rows, num_hog_cols, 31); // The number of channels in HOG is fixed at the moment, as using FHOG
-			open_face_rec.SetObservationActionUnits(face_analyser.GetCurrentAUsReg(), face_analyser.GetCurrentAUsClass());
-			open_face_rec.SetObservationLandmarks(face_model.detected_landmarks, face_model.GetShape(image_reader.fx, image_reader.fy, image_reader.cx, image_reader.cy),
-				face_model.params_global, face_model.params_local, face_model.detection_certainty, face_model.detection_success);
-			open_face_rec.SetObservationPose(pose_estimate);
-			open_face_rec.SetObservationGaze(gaze_direction0, gaze_direction1, gaze_angle, LandmarkDetector::CalculateAllEyeLandmarks(face_model), LandmarkDetector::Calculate3DEyeLandmarks(face_model, image_reader.fx, image_reader.fy, image_reader.cx, image_reader.cy));
-			open_face_rec.SetObservationFaceAlign(sim_warped_img);
-			open_face_rec.SetObservationFaceID(face);
-			open_face_rec.WriteObservation();
-
-		}
-		if (face_detections.size() > 0)
-		{
-			visualizer.ShowObservation();
+			j["faces"].push_back(jsonFace);
 		}
 
-		open_face_rec.SetObservationVisualization(visualizer.GetVisImage());
-		open_face_rec.WriteObservationTracked();
+		std::string strResult = j.dump();
+		strcpy(jsonData, strResult.c_str());
 
-		open_face_rec.Close();
-
-		// Grabbing the next frame in the sequence
-		rgb_image = image_reader.GetNextImage();
-
+		return true;
 	}
 
-	return 0;
+	PINVOKE_ENTRY_POINT bool __stdcall OpenFaceClose()
+	{
+		return s_openFaceParams.Close();
+	}
 }
-
