@@ -177,7 +177,6 @@ extern "C" {
 		return true;
 	}
 
-	// Return JSON string?
 	// The pixels are in ARGB32 format
 	PINVOKE_ENTRY_POINT bool __stdcall OpenFaceGetFeatures(const char* pixels, int width, int height, char* jsonData, int jsonDataLength)
 	{
@@ -188,16 +187,16 @@ extern "C" {
 		}
 	
 		cv::Mat rgba_image = bytesToMat((byte*)pixels, width, height);
+		cv::flip(rgba_image, rgba_image, 0);
+
 		cv::Mat rgb_image = cv::Mat();
 		// Convert to RGB24. Strangely enough we expect RGBA input but we get BGRA
 		cv::cvtColor(rgba_image, rgb_image, cv::COLOR_BGRA2RGB);
 
-		// Save the image to file for tests
 #ifdef false
 		auto path = "C:/DEV/HACKWEEK/test.jpg";
 		bool okWrite = cv::imwrite(path, rgb_image); // A JPG FILE IS BEING SAVED
 #endif
-
 		auto face_model = *s_openFaceParams.faceModel;
 		auto face_analyser = *s_openFaceParams.faceAnalyser;
 		auto det_parameters = *s_openFaceParams.faceModelParams;
