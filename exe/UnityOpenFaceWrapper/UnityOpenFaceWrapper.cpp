@@ -191,8 +191,6 @@ extern "C" {
 		cv::Mat rgb_image = cv::Mat();
 		// Convert to RGB24. Strangely enough we expect RGBA input but we get BGRA
 		cv::cvtColor(rgba_image, rgb_image, cv::COLOR_BGRA2RGB);
-		// Flip vertically?
-		cv::flip(rgb_image, rgb_image, 0);
 
 		// Save the image to file for tests
 #ifdef false
@@ -222,7 +220,7 @@ extern "C" {
 		float cy = s_openFaceParams.cameraCalib.cy;
 
 		// Making sure the image is in uchar grayscale (some face detectors use RGB, landmark detector uses grayscale)
-		cv::Mat_<uchar> grayscale_image; // TODO: convert color to grayscale
+		cv::Mat_<uchar> grayscale_image;
 		cv::cvtColor(rgb_image, grayscale_image, cv::COLOR_RGB2GRAY);
 
 		// Detect faces in an image
