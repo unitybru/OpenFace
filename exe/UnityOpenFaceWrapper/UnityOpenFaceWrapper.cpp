@@ -212,7 +212,6 @@ extern "C" {
 		}
 
 		std::cout << "Starting tracking" << std::endl;
-		bool has_bounding_boxes = false;
 		float fx = s_openFaceParams.cameraCalib.fx;
 		float fy = s_openFaceParams.cameraCalib.fy;
 		float cx = s_openFaceParams.cameraCalib.cx;
@@ -225,28 +224,19 @@ extern "C" {
 		// Detect faces in an image
 		std::vector<cv::Rect_<float> > face_detections;
 
-		if (has_bounding_boxes)
+		if (det_parameters.curr_face_detector == LandmarkDetector::FaceModelParameters::HOG_SVM_DETECTOR)
 		{
-			//face_detections = image_reader.GetBoundingBoxes();
-			std::cout << "Unexpected setup (bounding boxes)" << std::endl;
-			return false;
+			std::vector<float> confidences;
+			LandmarkDetector::DetectFacesHOG(face_detections, grayscale_image, s_openFaceParams.face_detector_hog, confidences);
+		}
+		else if (det_parameters.curr_face_detector == LandmarkDetector::FaceModelParameters::HAAR_DETECTOR)
+		{
+			LandmarkDetector::DetectFaces(face_detections, grayscale_image, *s_openFaceParams.classifier);
 		}
 		else
 		{
-			if (det_parameters.curr_face_detector == LandmarkDetector::FaceModelParameters::HOG_SVM_DETECTOR)
-			{
-				std::vector<float> confidences;
-				LandmarkDetector::DetectFacesHOG(face_detections, grayscale_image, s_openFaceParams.face_detector_hog, confidences);
-			}
-			else if (det_parameters.curr_face_detector == LandmarkDetector::FaceModelParameters::HAAR_DETECTOR)
-			{
-				LandmarkDetector::DetectFaces(face_detections, grayscale_image, *s_openFaceParams.classifier);
-			}
-			else
-			{
-				std::vector<float> confidences;
-				LandmarkDetector::DetectFacesMTCNN(face_detections, rgb_image, *s_openFaceParams.face_detector_mtcnn, confidences);
-			}
+			std::vector<float> confidences;
+			LandmarkDetector::DetectFacesMTCNN(face_detections, rgb_image, *s_openFaceParams.face_detector_mtcnn, confidences);
 		}
 
 		// Detect landmarks around detected faces
@@ -260,7 +250,7 @@ extern "C" {
 			// if there are multiple detections go through them
 			bool success = LandmarkDetector::DetectLandmarksInImage(rgb_image, face_detections[face], face_model, det_parameters, grayscale_image);
 
-			// Estimate head pose and eye gaze				
+			// Estimate head pose and eye gaze
 			cv::Vec6d pose_estimate = LandmarkDetector::GetPose(face_model, fx, fy, cx, cy);
 
 			// Gaze tracking, absolute gaze direction
@@ -292,15 +282,30 @@ extern "C" {
 
 			jsonFace["landmarks"]["success"] = success;
 			jsonFace["landmarks"]["landmarks2d"] = {};
+			jsonFace["landmarks"]["landmarks3d"] = {};
 			if (success)
 			{
-				auto numLandmarks = face_model.detected_landmarks.size().height / 2;
-				for (int i = 0; i < numLandmarks; i++)
+				// Report 2D landmarks
+				auto numLandmarks2D = face_model.detected_landmarks.size().height / 2; // X & Y
+				for (int i = 0; i < numLandmarks2D; i++)
 				{
-					json jsonCurrLandmark;
-					jsonCurrLandmark["x"] = *face_model.detected_landmarks[i];
-					jsonCurrLandmark["y"] = *face_model.detected_landmarks[i + numLandmarks];
-					jsonFace["landmarks"]["landmarks2d"].push_back(jsonCurrLandmark);
+					json jsonCurrLandmark2D;
+					jsonCurrLandmark2D["x"] = *face_model.detected_landmarks[i];
+					jsonCurrLandmark2D["y"] = *face_model.detected_landmarks[i + numLandmarks2D];
+					jsonFace["landmarks"]["landmarks2d"].push_back(jsonCurrLandmark2D);
+				}
+
+				// Report 3D landmarks
+				auto landmarks3d = face_model.GetShape(fx, fy, cx, cy);
+				auto numLandmarks3D = landmarks3d.cols; // X Y Z
+
+				for (int i = 0; i < numLandmarks3D; i++)
+				{
+					json jsonCurrLandmark3D;
+					jsonCurrLandmark3D["x"] = landmarks3d.data[i];
+					jsonCurrLandmark3D["y"] = landmarks3d.data[i + numLandmarks3D];
+					jsonCurrLandmark3D["z"] = landmarks3d.data[i + 2*numLandmarks3D];
+					jsonFace["landmarks"]["landmarks3d"].push_back(jsonCurrLandmark3D);
 				}
 			}
 
